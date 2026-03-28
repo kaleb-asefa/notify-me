@@ -2,14 +2,14 @@
 import os
 import telebot
 import requests
-from config import api_token, TEXTBEE_API_KEY, TEXTBEE_DEVICE_ID
+from config import api_token, TEXTBEE_API_KEY, TEXTBEE_DEVICE_ID, phone_number
 
 # === TextBee API setup ===
 
 TEXTBEE_URL = f"https://api.textbee.dev/api/v1/gateway/devices/{TEXTBEE_DEVICE_ID}/send-sms"
 
 # The phone number to receive SMS
-SMS_RECIPIENT = "+251991135255"  # replace with the real phone number
+SMS_RECIPIENT = phone_number  # replace with the real phone number
 
 # === Telegram bot setup ===
 bot = telebot.TeleBot(token=api_token)
