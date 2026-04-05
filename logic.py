@@ -8,7 +8,7 @@ cross_verifier = CrossEncoder('cross-encoder/stsb-distilroberta-base')
 
 # ---- SETTINGS ----
 SIMILARITY_THRESHOLD = 0.45 
-MAX_MESSAGES = 6
+MAX_MESSAGES = 3
 TIME_WINDOW_MINUTES = 4
 
 message_buffer = []
