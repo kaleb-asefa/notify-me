@@ -1,77 +1,114 @@
-from sentence_transformers import SentenceTransformer, CrossEncoder
-import numpy as np
 from datetime import datetime, timedelta
+from typing import List, Tuple
 
-bi_encoder = SentenceTransformer('all-MiniLM-L6-v2')
-# Using a model better suited for "Natural Language Inference" (is A related to B?)
-cross_verifier = CrossEncoder('cross-encoder/stsb-distilroberta-base')
+import numpy as np
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
-# ---- SETTINGS ----
-SIMILARITY_THRESHOLD = 0.45 
-MAX_MESSAGES = 3
-TIME_WINDOW_MINUTES = 4
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
 
-message_buffer = []
-last_update_text = ""
+bi_encoder: SentenceTransformer = SentenceTransformer("all-MiniLM-L6-v2")
+cross_verifier: CrossEncoder = CrossEncoder("cross-encoder/stsb-distilroberta-base")
 
-update_examples = [
-    "the class is in room 304", "lecture moved to room 102",
-    "class is cancelled today", "exam postponed until monday",
-    "the new location is 304", "meeting in room 205"
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+SIMILARITY_THRESHOLD: float = 0.45
+MAX_MESSAGES: int = 3
+TIME_WINDOW_MINUTES: int = 4
+
+# ---------------------------------------------------------------------------
+# Update examples (domain-specific phrases to match against)
+# ---------------------------------------------------------------------------
+
+UPDATE_EXAMPLES: List[str] = [
+    "the class is in room 304",
+    "lecture moved to room 102",
+    "class is cancelled today",
+    "exam postponed until monday",
+    "the new location is 304",
+    "meeting in room 205",
 ]
-example_embeddings = bi_encoder.encode(update_examples)
 
-def is_question(text):
-    question_indicators = ['?', 'where', 'when', 'who', 'how', 'is there', 'do we']
-    t = text.lower().strip()
-    return any(indicator in t for indicator in question_indicators)
+_example_embeddings: np.ndarray = bi_encoder.encode(UPDATE_EXAMPLES)
 
-def process_message(text):
-    global message_buffer, last_update_text
-    
-    # 1. ALWAYS ADD TO BUFFER (Crucial for context!)
+# ---------------------------------------------------------------------------
+# Mutable state
+# ---------------------------------------------------------------------------
+
+_message_buffer: List[Tuple[str, datetime]] = []
+_last_update_text: str = ""
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_question(text: str) -> bool:
+    """Return True if *text* looks like a question."""
+    indicators = ["?", "where", "when", "who", "how", "is there", "do we"]
+    lower = text.lower().strip()
+    return any(indicator in lower for indicator in indicators)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def process_message(text: str) -> bool:
+    """
+    Process an incoming message and decide whether it describes a
+    schedule / location update.
+
+    Returns ``True`` when an update is detected, ``False`` otherwise.
+    """
+    global _message_buffer, _last_update_text
+
     now = datetime.now()
-    message_buffer.append((text, now))
-    
-    # Cleanup old messages
-    message_buffer[:] = [(m, t) for m, t in message_buffer 
-                         if now - t <= timedelta(minutes=TIME_WINDOW_MINUTES)]
-    
-    # 2. IF IT'S A QUESTION, DON'T TRIGGER ALERT (but keep in buffer)
-    if is_question(text):
-        print(f"[DEBUG] Context updated: {text}")
+
+    # 1. Append current message to rolling buffer
+    _message_buffer.append((text, now))
+
+    # 2. Evict messages outside the time window
+    _message_buffer[:] = [
+        (msg, ts)
+        for msg, ts in _message_buffer
+        if now - ts <= timedelta(minutes=TIME_WINDOW_MINUTES)
+    ]
+
+    # 3. Skip questions (but keep them in the buffer for context)
+    if _is_question(text):
         return False
 
-    # 3. BUILD CONTEXT
-    # We look at the last few messages to see if they "support" the current statement
-    context = " ".join([m for m, t in message_buffer])
-    
-    # 4. PRE-FILTER (Bi-Encoder)
-    emb_ctx = bi_encoder.encode(context)
-    bi_sims = [np.dot(emb_ctx, ex) / (np.linalg.norm(emb_ctx) * np.linalg.norm(ex)) for ex in example_embeddings]
-    max_bi_sim = max(bi_sims)
+    # 4. Build context string from buffered messages
+    context = " ".join(msg for msg, _ in _message_buffer)
 
-    if max_bi_sim < 0.4: # Very loose filter
+    # 5. Bi-encoder pre-filter
+    ctx_emb = bi_encoder.encode(context)
+    similarities = [
+        np.dot(ctx_emb, ex)
+        / (np.linalg.norm(ctx_emb) * np.linalg.norm(ex))
+        for ex in _example_embeddings
+    ]
+    max_bi_sim = max(similarities)
+
+    if max_bi_sim < 0.4:
         return False
 
-    # 5. CROSS-ENCODER VERIFICATION
-    # Compare context against our "Update Examples"
-    pairs = [[context, ex] for ex in update_examples]
+    # 6. Cross-encoder verification
+    pairs = [[context, ex] for ex in UPDATE_EXAMPLES]
     scores = cross_verifier.predict(pairs)
-    max_score = max(scores)
+    max_score = float(max(scores))
 
-    print(f"[DEBUG] Bi-Sim: {max_bi_sim:.2f} | Cross-Score: {max_score:.2f}")
-
-    # 6. FINAL DECISION
-    # STS-B Cross-Encoders usually scale 0 to 1. 0.6 is a strong match.
     if max_score > 0.6:
-        # Avoid repeating the exact same message
-        if text.lower().strip() == last_update_text.lower().strip():
+        # Suppress consecutive duplicates
+        if text.lower().strip() == _last_update_text.lower().strip():
             return False
-            
-        last_update_text = text
-        print(f"✅ NEW UPDATE: {text} (Context: {context})")
-        # Don't clear buffer immediately, but maybe shorten it
+
+        _last_update_text = text
         return True
 
     return False

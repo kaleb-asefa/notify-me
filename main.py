@@ -1,54 +1,80 @@
-# bot_sms.py
-import os
-import telebot
+import logging
+import sys
+from typing import NoReturn
+
 import requests
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import json
-from config import api_token, TEXTBEE_API_KEY, TEXTBEE_DEVICE_ID, phone_number
+import telebot
+from telebot.types import Message
+
+from config import (
+    SMS_RECIPIENT,
+    TELEGRAM_BOT_TOKEN,
+    TEXTBEE_API_KEY,
+    TEXTBEE_DEVICE_ID,
+)
 from logic import process_message
 
-# === TextBee API setup ===
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 
-TEXTBEE_URL = f"https://api.textbee.dev/api/v1/gateway/devices/{TEXTBEE_DEVICE_ID}/send-sms"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("bot")
 
-# The phone number to receive SMS
-SMS_RECIPIENT = phone_number  # replace with the real phone number
+# ---------------------------------------------------------------------------
+# TextBee SMS gateway
+# ---------------------------------------------------------------------------
 
-# === Telegram bot setup ===
-bot = telebot.TeleBot(token=api_token)
-
-# @bot.message_handler(regexp='(?i)update')
-# def forward_to_sms(message):
-#     if message.chat.type not in ["group", "supergroup"]:
-#         return
-
-#     text = message.text or "[non-text message]"
-#     sms_text = f"From group ({message.chat.title}):\n{text}"
-
-#     # Send SMS via TextBee
-#     payload = {"recipients": [SMS_RECIPIENT], "message": sms_text}
-#     headers = {"x-api-key": TEXTBEE_API_KEY, "Content-Type": "application/json"}
-#     try:
-#         requests.post(TEXTBEE_URL, json=payload, headers=headers)
-#     except Exception as e:
-#         print("SMS send failed:", e)
-
-#     # Optional: reply in group to acknowledge
-#     try:
-#         bot.reply_to(message, "This message was sent as SMS.")
-#     except:
-#         pass
+TEXTBEE_URL = (
+    f"https://api.textbee.dev/api/v1/gateway/devices/"
+    f"{TEXTBEE_DEVICE_ID}/send-sms"
+)
 
 
+def send_sms(text: str) -> None:
+    """Send an SMS notification via the TextBee API."""
+    payload = {"recipients": [SMS_RECIPIENT], "message": text}
+    headers = {"x-api-key": TEXTBEE_API_KEY, "Content-Type": "application/json"}
+    try:
+        resp = requests.post(TEXTBEE_URL, json=payload, headers=headers, timeout=10)
+        resp.raise_for_status()
+        logger.info("SMS sent successfully")
+    except requests.RequestException as exc:
+        logger.warning("Failed to send SMS: %s", exc)
 
-# ---------------- RUN BOT ----------------
-print("Bot is running...")
+
+# ---------------------------------------------------------------------------
+# Telegram bot
+# ---------------------------------------------------------------------------
+
+bot = telebot.TeleBot(token=TELEGRAM_BOT_TOKEN)
+
 
 @bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    if process_message(message.text):
-        bot.reply_to(message, "Message processed for update detection.")
-    else:
-        print(f"Not an update: {message.text}")
+def handle_message(message: Message) -> None:
+    """Route every incoming group message through the update detector."""
+    try:
+        if process_message(message.text):
+            bot.reply_to(message, "Update detected and logged.")
+            logger.info("Update: %s", message.text)
+    except Exception:
+        logger.exception("Error processing message")
 
-bot.polling()
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+def main() -> NoReturn:
+    """Start the Telegram bot polling loop."""
+    logger.info("Bot is running ...")
+    bot.polling(none_stop=True)
+
+
+if __name__ == "__main__":
+    main()
